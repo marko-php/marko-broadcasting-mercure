@@ -8,6 +8,7 @@ use Marko\Broadcasting\Mercure\Driver\MercureBroadcaster;
 use Marko\Broadcasting\Mercure\Exceptions\MercureException;
 use Marko\Broadcasting\Mercure\Jwt\MercureJwt;
 use Marko\Broadcasting\Mercure\MercureConfig;
+use Marko\Broadcasting\PresenceChannel;
 use Marko\Broadcasting\PrivateChannel;
 use Marko\Http\Exceptions\ConnectionException;
 use Marko\Http\HttpResponse;
@@ -117,9 +118,8 @@ describe('MercureBroadcaster', function (): void {
         $httpClient = new FakeHttpClient();
 
         expect(fn () => mercureBroadcaster($httpClient, publisherJwtKey: '')->broadcast('a', 'b', []))
-            ->toThrow(MercureException::class, 'No Mercure publisher credentials are configured');
-
-        expect($httpClient->requests)->toBeEmpty();
+            ->toThrow(MercureException::class, 'No Mercure publisher credentials are configured')
+            ->and($httpClient->requests)->toBeEmpty();
     });
 
     it('prefixes topics with the configured topic prefix', function (): void {
@@ -159,9 +159,8 @@ describe('MercureBroadcaster', function (): void {
         $httpClient = new FakeHttpClient();
 
         expect(fn () => mercureBroadcaster($httpClient)->broadcast('shows.42', '', []))
-            ->toThrow(BroadcastException::class, 'event name must not be empty');
-
-        expect($httpClient->requests)->toBeEmpty();
+            ->toThrow(BroadcastException::class, 'event name must not be empty')
+            ->and($httpClient->requests)->toBeEmpty();
     });
 
     it('broadcasts once per channel when dispatching a broadcastable', function (): void {
@@ -189,5 +188,13 @@ describe('MercureBroadcaster', function (): void {
             ->and(mercureFormFields($httpClient)['topic'])->toBe('orders')
             ->and(mercureFormFields($httpClient, 1)['topic'])->toBe('orders.7')
             ->and(mercureFormFields($httpClient, 1)['private'])->toBe('on');
+    });
+
+    it('throws a clear exception when broadcasting to a presence channel', function (): void {
+        $httpClient = mercureHub();
+
+        expect(fn () => mercureBroadcaster($httpClient)->broadcast(new PresenceChannel('room.1'), 'user.joined', []))
+            ->toThrow(BroadcastException::class, "Presence channel 'room.1' is not supported by Mercure.")
+            ->and($httpClient->requests)->toBeEmpty();
     });
 });

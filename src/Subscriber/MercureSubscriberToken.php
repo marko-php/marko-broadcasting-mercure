@@ -54,7 +54,7 @@ readonly class MercureSubscriberToken
         $topics = [];
 
         foreach ($channels as $channel) {
-            $channel = Channel::from($channel);
+            $channel = $this->rejectPresence(Channel::from($channel));
 
             if ($channel->isPrivate() && $this->channelRegistry->authorize($channel->name, $user)) {
                 $topics[] = $this->topic($channel);
@@ -110,11 +110,24 @@ readonly class MercureSubscriberToken
     public function subscribeUrl(array $channels): string
     {
         $query = implode('&', array_map(
-            fn (string|Channel $channel): string => 'topic=' . rawurlencode($this->topic(Channel::from($channel))),
+            fn (string|Channel $channel): string => 'topic='
+                . rawurlencode($this->topic($this->rejectPresence(Channel::from($channel)))),
             $channels,
         ));
 
         return $query === '' ? $this->mercureConfig->publicUrl : $this->mercureConfig->publicUrl . '?' . $query;
+    }
+
+    /**
+     * @throws BroadcastException
+     */
+    private function rejectPresence(Channel $channel): Channel
+    {
+        if ($channel->isPresence()) {
+            throw BroadcastException::presenceChannelsUnsupported('Mercure', $channel->name);
+        }
+
+        return $channel;
     }
 
     private function topic(Channel $channel): string

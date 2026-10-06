@@ -5,11 +5,13 @@ declare(strict_types=1);
 use Marko\Authentication\AuthenticatableInterface;
 use Marko\Broadcasting\Channel;
 use Marko\Broadcasting\ChannelRegistry;
+use Marko\Broadcasting\Exceptions\BroadcastException;
 use Marko\Broadcasting\Exceptions\ChannelAuthorizationException;
 use Marko\Broadcasting\Mercure\Exceptions\MercureException;
 use Marko\Broadcasting\Mercure\Jwt\MercureJwt;
 use Marko\Broadcasting\Mercure\MercureConfig;
 use Marko\Broadcasting\Mercure\Subscriber\MercureSubscriberToken;
+use Marko\Broadcasting\PresenceChannel;
 use Marko\Broadcasting\PrivateChannel;
 use Marko\Routing\Http\Response;
 use Marko\Testing\Fake\FakeAuthenticatable;
@@ -151,5 +153,15 @@ describe('MercureSubscriberToken', function (): void {
             . '?topic=https%3A%2F%2Fexample.com%2Fshows.42'
             . '&topic=https%3A%2F%2Fexample.com%2Forders.7',
         );
+    });
+
+    it('throws a clear exception when issuing a subscriber token for a presence channel', function (): void {
+        expect(fn () => mercureSubscriberToken()->for([new PresenceChannel('room.1')], new FakeAuthenticatable(id: 7)))
+            ->toThrow(BroadcastException::class, "Presence channel 'room.1' is not supported by Mercure.");
+    });
+
+    it('throws a clear exception when building a subscribe url for a presence channel', function (): void {
+        expect(fn () => mercureSubscriberToken()->subscribeUrl(['shows.42', new PresenceChannel('room.1')]))
+            ->toThrow(BroadcastException::class, "Presence channel 'room.1' is not supported by Mercure.");
     });
 });
