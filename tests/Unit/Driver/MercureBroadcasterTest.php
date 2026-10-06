@@ -8,13 +8,16 @@ use Marko\Broadcasting\Mercure\Driver\MercureBroadcaster;
 use Marko\Broadcasting\Mercure\Exceptions\MercureException;
 use Marko\Broadcasting\Mercure\Jwt\MercureJwt;
 use Marko\Broadcasting\Mercure\MercureConfig;
-use Marko\Broadcasting\Mercure\Tests\Support\RecordingHttpClient;
 use Marko\Broadcasting\PrivateChannel;
 use Marko\Http\Exceptions\ConnectionException;
 use Marko\Http\HttpResponse;
+use Marko\Testing\Fake\FakeHttpClient;
+use Marko\Testing\Fake\Http\RecordedRequest;
+
+const MERCURE_TEST_HUB_URL = 'http://caddy/.well-known/mercure';
 
 function mercureBroadcaster(
-    RecordingHttpClient $httpClient,
+    FakeHttpClient $httpClient,
     string $publisherJwtKey = 'publisher-secret',
     string $publisherJwt = '',
     string $topicPrefix = '',
@@ -23,7 +26,7 @@ function mercureBroadcaster(
         httpClient: $httpClient,
         mercureJwt: new MercureJwt(),
         mercureConfig: new MercureConfig(
-            hubUrl: 'http://caddy/.well-known/mercure',
+            hubUrl: MERCURE_TEST_HUB_URL,
             publicUrl: 'https://example.com/.well-known/mercure',
             publisherJwtKey: $publisherJwtKey,
             publisherJwt: $publisherJwt,
@@ -33,27 +36,35 @@ function mercureBroadcaster(
 }
 
 /**
+ * A FakeHttpClient whose hub accepts every update, as a real Mercure hub does
+ * by answering with the update's id.
+ */
+function mercureHub(): FakeHttpClient
+{
+    return new FakeHttpClient()->stub(MERCURE_TEST_HUB_URL, new HttpResponse(200, 'urn:uuid:1'));
+}
+
+/**
  * @return array<string, string>
  */
-function mercureFormFields(RecordingHttpClient $httpClient, int $index = 0): array
+function mercureFormFields(FakeHttpClient $httpClient, int $index = 0): array
 {
-    parse_str($httpClient->requests[$index]['options']['body'], $fields);
+    parse_str($httpClient->requests[$index]->body(), $fields);
 
     return $fields;
 }
 
 describe('MercureBroadcaster', function (): void {
     it('posts topic, data, type and id form fields to the hub url', function (): void {
-        $httpClient = new RecordingHttpClient();
+        $httpClient = mercureHub();
 
         mercureBroadcaster($httpClient)->broadcast('shows.42', 'seat.sold', ['seat' => 'A1'], 'evt-1');
 
-        $request = $httpClient->requests[0];
-
-        expect($request['method'])->toBe('POST')
-            ->and($request['url'])->toBe('http://caddy/.well-known/mercure')
-            ->and($request['options']['headers']['Content-Type'])->toBe('application/x-www-form-urlencoded')
-            ->and($request['options']['timeout'])->toBe(5)
+        expect($httpClient->requests)->toHaveCount(1)
+            ->and($httpClient)->toHaveSentRequest(fn (RecordedRequest $request): bool => $request->method === 'POST'
+                && $request->url === MERCURE_TEST_HUB_URL
+                && $request->header('Content-Type') === 'application/x-www-form-urlencoded'
+                && $request->options['timeout'] === 5)
             ->and(mercureFormFields($httpClient))->toBe([
                 'topic' => 'shows.42',
                 'data' => '{"seat":"A1"}',
@@ -63,7 +74,7 @@ describe('MercureBroadcaster', function (): void {
     });
 
     it('omits the id field when no id is given', function (): void {
-        $httpClient = new RecordingHttpClient();
+        $httpClient = mercureHub();
 
         mercureBroadcaster($httpClient)->broadcast('shows.42', 'seat.sold', []);
 
@@ -72,7 +83,7 @@ describe('MercureBroadcaster', function (): void {
     });
 
     it('marks private channel updates with private=on', function (): void {
-        $httpClient = new RecordingHttpClient();
+        $httpClient = mercureHub();
 
         mercureBroadcaster($httpClient)->broadcast(new PrivateChannel('orders.7'), 'order.shipped', ['id' => 7]);
 
@@ -80,31 +91,39 @@ describe('MercureBroadcaster', function (): void {
     });
 
     it('sends a bearer publisher jwt with a publish claim', function (): void {
-        $httpClient = new RecordingHttpClient();
+        $httpClient = mercureHub();
 
         mercureBroadcaster($httpClient)->broadcast('shows.42', 'seat.sold', []);
 
         $expected = new MercureJwt()->encode(['mercure' => ['publish' => ['*']]], 'publisher-secret');
 
-        expect($httpClient->requests[0]['options']['headers']['Authorization'])->toBe("Bearer $expected");
+        expect($httpClient)->toHaveSentRequest(
+            fn (RecordedRequest $request): bool => $request->header('Authorization') === "Bearer $expected",
+        );
     });
 
     it('uses the static publisher jwt when configured', function (): void {
-        $httpClient = new RecordingHttpClient();
+        $httpClient = mercureHub();
 
         mercureBroadcaster($httpClient, publisherJwtKey: '', publisherJwt: 'static.jwt.token')
             ->broadcast('shows.42', 'seat.sold', []);
 
-        expect($httpClient->requests[0]['options']['headers']['Authorization'])->toBe('Bearer static.jwt.token');
+        expect($httpClient)->toHaveSentRequest(
+            fn (RecordedRequest $request): bool => $request->header('Authorization') === 'Bearer static.jwt.token',
+        );
     });
 
     it('throws when no publisher credentials are configured', function (): void {
-        expect(fn () => mercureBroadcaster(new RecordingHttpClient(), publisherJwtKey: '')->broadcast('a', 'b', []))
+        $httpClient = new FakeHttpClient();
+
+        expect(fn () => mercureBroadcaster($httpClient, publisherJwtKey: '')->broadcast('a', 'b', []))
             ->toThrow(MercureException::class, 'No Mercure publisher credentials are configured');
+
+        expect($httpClient->requests)->toBeEmpty();
     });
 
     it('prefixes topics with the configured topic prefix', function (): void {
-        $httpClient = new RecordingHttpClient();
+        $httpClient = mercureHub();
 
         mercureBroadcaster($httpClient, topicPrefix: 'https://example.com/')->broadcast('shows.42', 'seat.sold', []);
 
@@ -112,26 +131,41 @@ describe('MercureBroadcaster', function (): void {
     });
 
     it('throws BroadcastException when the hub request fails', function (): void {
-        $httpClient = new RecordingHttpClient(exception: new ConnectionException('Connection refused'));
+        $httpClient = new FakeHttpClient()->stub(MERCURE_TEST_HUB_URL, new ConnectionException('Connection refused'));
 
         expect(fn () => mercureBroadcaster($httpClient)->broadcast('shows.42', 'seat.sold', []))
             ->toThrow(BroadcastException::class, "Failed to broadcast to channel 'shows.42' via Mercure");
     });
 
     it('throws BroadcastException when the hub answers with an error status', function (): void {
-        $httpClient = new RecordingHttpClient(response: new HttpResponse(401, 'Unauthorized'));
+        $httpClient = new FakeHttpClient()->stub(MERCURE_TEST_HUB_URL, new HttpResponse(401, 'Unauthorized'));
 
         expect(fn () => mercureBroadcaster($httpClient)->broadcast('shows.42', 'seat.sold', []))
             ->toThrow(BroadcastException::class, 'via Mercure');
     });
 
+    it('throws BroadcastException when the hub answers with a non-success status', function (): void {
+        $httpClient = new FakeHttpClient()->stub(MERCURE_TEST_HUB_URL, new HttpResponse(304, ''));
+
+        try {
+            mercureBroadcaster($httpClient)->broadcast('shows.42', 'seat.sold', []);
+            $this->fail('Expected BroadcastException');
+        } catch (BroadcastException $exception) {
+            expect($exception->getContext())->toContain('hub responded with HTTP 304');
+        }
+    });
+
     it('rejects an empty event name', function (): void {
-        expect(fn () => mercureBroadcaster(new RecordingHttpClient())->broadcast('shows.42', '', []))
+        $httpClient = new FakeHttpClient();
+
+        expect(fn () => mercureBroadcaster($httpClient)->broadcast('shows.42', '', []))
             ->toThrow(BroadcastException::class, 'event name must not be empty');
+
+        expect($httpClient->requests)->toBeEmpty();
     });
 
     it('broadcasts once per channel when dispatching a broadcastable', function (): void {
-        $httpClient = new RecordingHttpClient();
+        $httpClient = mercureHub();
 
         mercureBroadcaster($httpClient)->dispatch(new readonly class () implements BroadcastableInterface
         {
