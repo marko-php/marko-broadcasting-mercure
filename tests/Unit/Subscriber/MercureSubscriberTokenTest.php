@@ -21,6 +21,7 @@ function mercureSubscriberToken(
     string $subscriberJwtKey = 'subscriber-secret',
     string $cookieDomain = '',
     ?FakeClock $clock = null,
+    string $topicPrefix = 'https://example.com/',
 ): MercureSubscriberToken {
     /** @noinspection PhpMissingParentConstructorInspection - Test stub replaces discovery-backed authorization */
     $channelRegistry = new class () extends ChannelRegistry
@@ -33,7 +34,7 @@ function mercureSubscriberToken(
             ?AuthenticatableInterface $user,
         ): bool {
             return match ($channelName) {
-                'orders.7' => $user !== null,
+                'orders.7', 'customers.1{x}', 'customers.1,foo' => $user !== null,
                 'orders.8' => false,
                 default => throw ChannelAuthorizationException::unknownChannel($channelName),
             };
@@ -47,7 +48,7 @@ function mercureSubscriberToken(
             publicUrl: 'https://example.com/.well-known/mercure',
             subscriberJwtKey: $subscriberJwtKey,
             subscriberJwtTtl: 600,
-            topicPrefix: 'https://example.com/',
+            topicPrefix: $topicPrefix,
             cookieDomain: $cookieDomain,
         ),
         channelRegistry: $channelRegistry,
@@ -58,6 +59,21 @@ function mercureSubscriberToken(
 /**
  * @return array<string, mixed>
  */
+/**
+ * A private channel that skips Channel's name validation, standing in for a subclass that
+ * overrides the constructor.
+ */
+function unvalidatedPrivateChannel(string $name): PrivateChannel
+{
+    return new readonly class ($name) extends PrivateChannel
+    {
+        /** @noinspection PhpMissingParentConstructorInspection - Deliberately bypasses name validation */
+        public function __construct(
+            public string $name,
+        ) {}
+    };
+}
+
 function mercureClaims(string $token): array
 {
     return json_decode(base64_decode(strtr(explode('.', $token)[1], '-_', '+/')), true);
@@ -153,6 +169,26 @@ describe('MercureSubscriberToken', function (): void {
             . '?topic=https%3A%2F%2Fexample.com%2Fshows.42'
             . '&topic=https%3A%2F%2Fexample.com%2Forders.7',
         );
+    });
+
+    it('refuses to sign a topic containing URI-template characters', function (string $name): void {
+        expect(fn () => mercureSubscriberToken()->for([unvalidatedPrivateChannel($name)], new FakeAuthenticatable()))
+            ->toThrow(MercureException::class, 'not a safe Mercure topic');
+    })->with([
+        'URI template' => ['customers.1{x}'],
+        'comma list' => ['customers.1,foo'],
+    ]);
+
+    it('refuses to issue a token when the topic prefix contains URI-template characters', function (): void {
+        expect(fn () => mercureSubscriberToken(topicPrefix: 'https://example.com/{tenant}/')->for(
+            [new PrivateChannel('orders.7')],
+            new FakeAuthenticatable(),
+        ))->toThrow(MercureException::class, 'not a safe Mercure topic');
+    });
+
+    it('refuses to build a subscribe url for a topic containing URI-template characters', function (): void {
+        expect(fn () => mercureSubscriberToken()->subscribeUrl([unvalidatedPrivateChannel('customers.{id}')]))
+            ->toThrow(MercureException::class, 'not a safe Mercure topic');
     });
 
     it('throws a clear exception when issuing a subscriber token for a presence channel', function (): void {

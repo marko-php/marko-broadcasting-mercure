@@ -34,4 +34,15 @@ class MercureException extends BroadcastException
             suggestion: 'Set MERCURE_SUBSCRIBER_JWT_KEY to the hub\'s subscriber key.',
         );
     }
+
+    public static function unsafeTopic(string $topic): self
+    {
+        $printable = addcslashes($topic, "\0..\37\177");
+
+        return new self(
+            message: "'$printable' is not a safe Mercure topic.",
+            context: 'Mercure reads { } as a URI template and , or * as selector syntax, so this topic could grant access to other topics',
+            suggestion: "Remove { } * , whitespace and control characters from the channel name and from 'broadcasting-mercure.topic_prefix'.",
+        );
+    }
 }

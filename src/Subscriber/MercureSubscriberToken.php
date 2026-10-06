@@ -105,7 +105,7 @@ readonly class MercureSubscriberToken
      * The hub URL for the browser's EventSource, with one `topic` parameter per channel.
      *
      * @param list<string|Channel> $channels
-     * @throws BroadcastException
+     * @throws BroadcastException|MercureException
      */
     public function subscribeUrl(array $channels): string
     {
@@ -130,8 +130,20 @@ readonly class MercureSubscriberToken
         return $channel;
     }
 
+    /**
+     * The topic for a channel. Mercure treats a subscribe-claim entry as a topic selector, which
+     * may be a URI template, so any template or selector syntax is refused rather than signed.
+     *
+     * @throws MercureException
+     */
     private function topic(Channel $channel): string
     {
-        return $this->mercureConfig->topicPrefix . $channel->name;
+        $topic = $this->mercureConfig->topicPrefix . $channel->name;
+
+        if (preg_match(Channel::FORBIDDEN_CHARACTERS_PATTERN, $topic) === 1) {
+            throw MercureException::unsafeTopic($topic);
+        }
+
+        return $topic;
     }
 }
