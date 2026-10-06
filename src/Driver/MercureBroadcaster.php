@@ -14,6 +14,7 @@ use Marko\Broadcasting\Mercure\Jwt\MercureJwt;
 use Marko\Broadcasting\Mercure\MercureConfig;
 use Marko\Http\Contracts\HttpClientInterface;
 use Marko\Http\Exceptions\HttpException;
+use Marko\Http\RequestOptions;
 
 /**
  * Publishes updates to a Mercure hub. The hub holds the subscriber connections; PHP only makes
@@ -90,20 +91,25 @@ readonly class MercureBroadcaster implements BroadcasterInterface
         ];
 
         try {
+            // http_errors off: a 4xx/5xx comes back as a response so the hub's own reason is reported below.
             $response = $this->httpClient->post($this->mercureConfig->hubUrl, [
-                'headers' => $headers,
-                'body' => http_build_query($fields, '', '&', PHP_QUERY_RFC3986),
-                'timeout' => $this->mercureConfig->timeout,
+                RequestOptions::HEADERS => $headers,
+                RequestOptions::BODY => http_build_query($fields, '', '&', PHP_QUERY_RFC3986),
+                RequestOptions::TIMEOUT => $this->mercureConfig->timeout,
+                RequestOptions::HTTP_ERRORS => false,
             ]);
         } catch (HttpException $e) {
+            // Transport failure (ConnectionException extends HttpException). The hub URL holds no
+            // credentials and the publisher JWT travels in a header, so the message is safe to keep.
             throw BroadcastException::publishFailed(self::DRIVER, $channel->name, $e->getMessage(), $e);
         }
 
         if (!$response->isSuccessful()) {
-            throw BroadcastException::publishFailed(
+            throw BroadcastException::rejected(
                 self::DRIVER,
                 $channel->name,
-                "hub responded with HTTP {$response->statusCode()}: {$response->body()}",
+                $response->statusCode(),
+                $response->bodyExcerpt(),
             );
         }
     }

@@ -12,6 +12,7 @@ use Marko\Broadcasting\PresenceChannel;
 use Marko\Broadcasting\PrivateChannel;
 use Marko\Http\Exceptions\ConnectionException;
 use Marko\Http\HttpResponse;
+use Marko\Http\RequestOptions;
 use Marko\Testing\Fake\FakeHttpClient;
 use Marko\Testing\Fake\Http\RecordedRequest;
 
@@ -130,28 +131,89 @@ describe('MercureBroadcaster', function (): void {
         expect(mercureFormFields($httpClient)['topic'])->toBe('https://example.com/shows.42');
     });
 
-    it('throws BroadcastException when the hub request fails', function (): void {
+    it('throws BroadcastException when the hub cannot be reached', function (): void {
         $httpClient = new FakeHttpClient()->stub(MERCURE_TEST_HUB_URL, new ConnectionException('Connection refused'));
 
-        expect(fn () => mercureBroadcaster($httpClient)->broadcast('shows.42', 'seat.sold', []))
-            ->toThrow(BroadcastException::class, "Failed to broadcast to channel 'shows.42' via Mercure");
+        try {
+            mercureBroadcaster($httpClient)->broadcast('shows.42', 'seat.sold', []);
+            $this->fail('Expected BroadcastException');
+        } catch (BroadcastException $exception) {
+            expect($exception->getMessage())->toBe("Failed to broadcast to channel 'shows.42' via Mercure.")
+                ->and($exception->getContext())->toContain('Connection refused')
+                ->and($exception->getPrevious())->toBeInstanceOf(ConnectionException::class);
+        }
     });
 
-    it('throws BroadcastException when the hub answers with an error status', function (): void {
+    it('sends the publish request with http_errors disabled', function (): void {
+        $httpClient = mercureHub();
+
+        mercureBroadcaster($httpClient)->broadcast('shows.42', 'seat.sold', []);
+
+        expect($httpClient->requests[0]->options[RequestOptions::HTTP_ERRORS])->toBeFalse();
+    });
+
+    it('puts the hub status and response body in the exception when the hub rejects the update', function (): void {
         $httpClient = new FakeHttpClient()->stub(MERCURE_TEST_HUB_URL, new HttpResponse(401, 'Unauthorized'));
 
-        expect(fn () => mercureBroadcaster($httpClient)->broadcast('shows.42', 'seat.sold', []))
-            ->toThrow(BroadcastException::class, 'via Mercure');
+        try {
+            mercureBroadcaster($httpClient)->broadcast('shows.42', 'seat.sold', []);
+            $this->fail('Expected BroadcastException');
+        } catch (BroadcastException $exception) {
+            expect($exception->getMessage())->toBe("Failed to broadcast to channel 'shows.42' via Mercure.")
+                ->and($exception->getContext())->toContain('HTTP 401: Unauthorized')
+                ->and($exception->getSuggestion())->toContain('credentials');
+        }
     });
 
-    it('throws BroadcastException when the hub answers with a non-success status', function (): void {
+    it('reports a hub server error with a server-side suggestion', function (): void {
+        $httpClient = new FakeHttpClient()->stub(MERCURE_TEST_HUB_URL, new HttpResponse(503, 'Service Unavailable'));
+
+        try {
+            mercureBroadcaster($httpClient)->broadcast('shows.42', 'seat.sold', []);
+            $this->fail('Expected BroadcastException');
+        } catch (BroadcastException $exception) {
+            expect($exception->getContext())->toContain('HTTP 503: Service Unavailable')
+                ->and($exception->getSuggestion())->toContain('server-side failure');
+        }
+    });
+
+    it('caps a large hub error body in the exception', function (): void {
+        $page = '<html>' . str_repeat('x', 5000) . '</html>';
+        $httpClient = new FakeHttpClient()->stub(MERCURE_TEST_HUB_URL, new HttpResponse(500, $page));
+
+        try {
+            mercureBroadcaster($httpClient)->broadcast('shows.42', 'seat.sold', []);
+            $this->fail('Expected BroadcastException');
+        } catch (BroadcastException $exception) {
+            expect($exception->getContext())->toContain('[truncated')
+                ->and($exception->getContext())->not->toContain('</html>');
+        }
+    });
+
+    it('never puts the publisher jwt in a rejected publish exception', function (): void {
+        $httpClient = new FakeHttpClient()->stub(MERCURE_TEST_HUB_URL, new HttpResponse(403, 'Forbidden'));
+
+        try {
+            mercureBroadcaster($httpClient, publisherJwt: 'static.publisher.jwt')->broadcast(
+                'shows.42',
+                'seat.sold',
+                [],
+            );
+            $this->fail('Expected BroadcastException');
+        } catch (BroadcastException $exception) {
+            expect($exception->getMessage() . $exception->getContext() . $exception->getSuggestion())
+                ->not->toContain('static.publisher.jwt');
+        }
+    });
+
+    it('throws BroadcastException when the hub answers with a redirect', function (): void {
         $httpClient = new FakeHttpClient()->stub(MERCURE_TEST_HUB_URL, new HttpResponse(304, ''));
 
         try {
             mercureBroadcaster($httpClient)->broadcast('shows.42', 'seat.sold', []);
             $this->fail('Expected BroadcastException');
         } catch (BroadcastException $exception) {
-            expect($exception->getContext())->toContain('hub responded with HTTP 304');
+            expect($exception->getContext())->toContain('HTTP 304: (empty body)');
         }
     });
 
