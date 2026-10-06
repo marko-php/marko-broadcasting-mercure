@@ -13,10 +13,12 @@ use Marko\Broadcasting\Mercure\Subscriber\MercureSubscriberToken;
 use Marko\Broadcasting\PrivateChannel;
 use Marko\Routing\Http\Response;
 use Marko\Testing\Fake\FakeAuthenticatable;
+use Marko\Testing\Fake\FakeClock;
 
 function mercureSubscriberToken(
     string $subscriberJwtKey = 'subscriber-secret',
     string $cookieDomain = '',
+    ?FakeClock $clock = null,
 ): MercureSubscriberToken {
     /** @noinspection PhpMissingParentConstructorInspection - Test stub replaces discovery-backed authorization */
     $channelRegistry = new class () extends ChannelRegistry
@@ -47,6 +49,7 @@ function mercureSubscriberToken(
             cookieDomain: $cookieDomain,
         ),
         channelRegistry: $channelRegistry,
+        clock: $clock ?? new FakeClock(),
     );
 }
 
@@ -96,12 +99,22 @@ describe('MercureSubscriberToken', function (): void {
         expect($signature)->toBe($expected);
     });
 
-    it('adds an expiry claim from the configured ttl', function (): void {
-        $before = time();
-        $claims = mercureClaims(mercureSubscriberToken()->for([], null));
+    it('sets the subscriber JWT exp from the injected clock', function (): void {
+        $clock = new FakeClock('2026-01-01 12:00:00 UTC');
+        $claims = mercureClaims(mercureSubscriberToken(clock: $clock)->for([], null));
 
-        expect($claims['exp'])->toBeGreaterThanOrEqual($before + 600)
-            ->toBeLessThanOrEqual(time() + 600);
+        expect($claims['exp'])->toBe(1767268800 + 600);
+    });
+
+    it('sets the authorization cookie expiry from the injected clock', function (): void {
+        $clock = new FakeClock('2026-01-01 12:00:00 UTC');
+        $response = mercureSubscriberToken(clock: $clock)->withAuthorizationCookie(
+            new Response('ok'),
+            [new PrivateChannel('orders.7')],
+            new FakeAuthenticatable(),
+        );
+
+        expect($response->cookies()[0]->expires())->toBe(1767268800 + 600);
     });
 
     it('throws when no subscriber key is configured', function (): void {

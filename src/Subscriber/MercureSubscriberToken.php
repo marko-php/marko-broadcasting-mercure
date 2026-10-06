@@ -17,6 +17,7 @@ use Marko\Routing\Exceptions\CookieException;
 use Marko\Routing\Http\Cookie;
 use Marko\Routing\Http\Response;
 use NoDiscard;
+use Psr\Clock\ClockInterface;
 use Psr\Container\ContainerExceptionInterface;
 use Psr\Container\NotFoundExceptionInterface;
 use ReflectionException;
@@ -33,6 +34,7 @@ readonly class MercureSubscriberToken
         private MercureJwt $mercureJwt,
         private MercureConfig $mercureConfig,
         private ChannelRegistry $channelRegistry,
+        private ClockInterface $clock,
     ) {}
 
     /**
@@ -61,7 +63,7 @@ readonly class MercureSubscriberToken
 
         $claims = [
             'mercure' => ['subscribe' => $topics],
-            'exp' => time() + $this->mercureConfig->subscriberJwtTtl,
+            'exp' => $this->clock->now()->getTimestamp() + $this->mercureConfig->subscriberJwtTtl,
         ];
 
         try {
@@ -90,7 +92,7 @@ readonly class MercureSubscriberToken
         return $response->withCookie(new Cookie(
             name: self::COOKIE_NAME,
             value: $this->for($channels, $user),
-            expires: time() + $this->mercureConfig->subscriberJwtTtl,
+            expires: $this->clock->now()->getTimestamp() + $this->mercureConfig->subscriberJwtTtl,
             path: is_string($path) && $path !== '' ? $path : '/',
             domain: $this->mercureConfig->cookieDomain !== '' ? $this->mercureConfig->cookieDomain : null,
             secure: $this->mercureConfig->cookieSecure,
